@@ -1,0 +1,340 @@
+---
+title: Autenticação
+description: Como funciona o sistema de autenticação com Better Auth no Beta.
+icon: ShieldCheck
+---
+
+O Beta usa **Better Auth** com email/senha e username. O pacote `packages/auth` expõe dois módulos: `server.ts` (backend) e `client.ts` (frontend).
+
+<Files>
+  <Folder name="packages/auth/src" defaultOpen>
+    <File name="server.ts" />
+    <File name="client.ts" />
+  </Folder>
+  <Folder name="apps/web/src" defaultOpen>
+    <Folder name="lib">
+      <File name="auth.tsx" />
+    </Folder>
+    <Folder name="features">
+      <File name="auth.tsx" />
+    </Folder>
+    <Folder name="routes">
+      <File name="login.tsx" />
+      <File name="_auth.tsx" />
+    </Folder>
+  </Folder>
+</Files>
+
+## Configuração do servidor
+
+O `server.ts` configura o Better Auth com Drizzle, plugins e rate limiting:
+
+```ts title="packages/auth/src/server.ts"
+export const auth = betterAuth({
+  basePath: '/auth',
+  baseUrl: env.BETTER_AUTH_URL,
+  database: drizzleAdapter(db, {
+    provider: 'pg',
+    schema: { account, session, user, verification },
+  }),
+  emailAndPassword: { enabled: true },
+  session: {
+    expiresIn: 60 * 60 * 24 * 7,   // 7 dias
+    updateAge: 60 * 60 * 24,        // renova a cada 24h
+  },
+  rateLimit: {
+    enabled: true,
+    window: 60,
+    max: 100,
+    customRules: {
+      '/auth/sign-in/*': { window: 300, max: 5 },
+      '/auth/sign-up/*': { window: 600, max: 3 },
+    },
+  },
+  plugins: [
+    adminPlugin(),
+    username({ minUsernameLength: 3, maxUsernameLength: 20 }),
+  ],
+})
+```
+
+### Plugins
+
+| Plugin | Server | Client | Função |
+|--------|--------|--------|--------|
+| `username` | `username()` | `usernameClient()` | Login por username (3–20 chars) |
+| `admin` | `adminPlugin()` | `adminClient()` | Gerenciamento de usuários e roles |
+| `openAPI` | `openAPI()` | — | Docs automáticas (apenas dev) |
+
+### Context
+
+O `createContext()` extrai a sessão de cada request e a disponibiliza para todos os handlers oRPC:
+
+```ts title="packages/auth/src/server.ts"
+export async function createContext({ request }: CreateContextOptions) {
+  const session = await auth.api.getSession({
+    headers: request.headers,
+  })
+  return { session }
+}
+
+export type Context = Awaited<ReturnType<typeof createContext>>
+```
+
+## Client (frontend)
+
+O client é criado com os plugins correspondentes:
+
+```ts title="packages/auth/src/client.ts"
+import { adminClient, usernameClient } from 'better-auth/client/plugins'
+import { createAuthClient } from 'better-auth/react'
+
+export const auth = createAuthClient({
+  baseURL: import.meta.env.VITE_SERVER_URL || '',
+  basePath: '/auth',
+  plugins: [adminClient(), usernameClient()],
+})
+```
+
+## Hooks de autenticação
+
+O arquivo `apps/web/src/lib/auth.tsx` encapsula os hooks com TanStack Query:
+
+<Tabs items={['useSignIn', 'useSignUp', 'useSignOut', 'sessionOptions']}>
+<Tab value="useSignIn">
+
+Login com username e senha. Após sucesso, refaz a query de sessão e redireciona:
+
+```ts
+const { mutateAsync: signIn, isPending } = useSignIn()
+
+const result = await signIn({
+  username: 'joao',
+  password: '12345678',
+})
+
+if (!result.success) {
+  // result.error.message contém a mensagem de erro
+}
+```
+
+</Tab>
+<Tab value="useSignUp">
+
+Registro com nome, email, username e senha:
+
+```ts
+const { mutateAsync: signUp, isPending } = useSignUp()
+
+const result = await signUp({
+  name: 'João Silva',
+  email: 'joao@email.com',
+  username: 'joao',
+  password: '12345678',
+})
+```
+
+</Tab>
+<Tab value="useSignOut">
+
+Logout. Remove a sessão do cache e redireciona:
+
+```ts
+const { mutate: signOut, isPending } = useSignOut()
+
+signOut()
+```
+
+</Tab>
+<Tab value="sessionOptions">
+
+Query options para acessar a sessão em qualquer componente ou loader:
+
+```ts
+import { sessionOptions } from '@/lib/auth'
+
+// Em um componente
+const { data: session } = useQuery(sessionOptions)
+
+// Em um loader (pré-carrega antes do render)
+await context.queryClient.ensureQueryData(sessionOptions)
+```
+
+<Callout type="info">
+O `staleTime` é de 5 minutos — a sessão não é revalidada a cada navegação, mas sim periodicamente.
+</Callout>
+
+</Tab>
+</Tabs>
+
+### AuthProvider
+
+O `AuthProvider` configura os redirects globais na raiz da aplicação:
+
+```tsx title="apps/web/src/routes/__root.tsx"
+<AuthProvider
+  redirects={{
+    afterSignIn: '/dashboard',
+    afterSignUp: '/dashboard',
+    afterSignOut: '/',
+  }}
+>
+  <Outlet />
+</AuthProvider>
+```
+
+## Proteção de rotas
+
+O TanStack Router usa o padrão de **layout pathless** para proteger grupos de rotas.
+
+### Como funciona
+
+```
+beforeLoad (tem sessão?) → loader (busca dados) → component (renderiza)
+```
+
+O layout `_auth.tsx` intercepta **antes** de qualquer rota filha carregar:
+
+```ts title="apps/web/src/routes/_auth.tsx"
+export const Route = createFileRoute('/_auth')({
+  beforeLoad: async ({ context }) => {
+    const session = await context.queryClient.ensureQueryData(sessionOptions)
+
+    if (!session) {
+      throw redirect({ to: '/login' })
+    }
+
+    return { session }
+  },
+  component: () => (
+    <LayoutComponent>
+      <Outlet />
+    </LayoutComponent>
+  ),
+})
+```
+
+<Callout type="info">
+A sessão retornada no `beforeLoad` fica disponível no `context` de todas as rotas filhas — não precisa buscar de novo.
+</Callout>
+
+### Estrutura de rotas
+
+<Files>
+  <Folder name="routes" defaultOpen>
+    <File name="__root.tsx" />
+    <File name="login.tsx" />
+    <File name="index.tsx" />
+    <Folder name="_auth" defaultOpen>
+      <File name="dashboard.tsx" />
+      <File name="produtos.tsx" />
+      <File name="categorias.tsx" />
+    </Folder>
+    <File name="_auth.tsx" />
+  </Folder>
+</Files>
+
+| Arquivo | URL | Protegida |
+|---------|-----|-----------|
+| `login.tsx` | `/login` | Não — redireciona para `/dashboard` se já autenticado |
+| `_auth.tsx` | — | Layout pathless (não gera URL) |
+| `_auth/dashboard.tsx` | `/dashboard` | Sim |
+| `_auth/produtos.tsx` | `/produtos` | Sim |
+
+<Callout type="warn">
+O prefixo `_` indica um layout pathless — ele agrupa e protege rotas filhas **sem adicionar segmento na URL**. Rotas dentro de `_auth/` exigem sessão automaticamente.
+</Callout>
+
+### Página de login
+
+A rota `/login` tem lógica inversa — se o usuário **já está autenticado**, redireciona para o dashboard:
+
+```ts title="apps/web/src/routes/login.tsx"
+export const Route = createFileRoute('/login')({
+  beforeLoad: async ({ context }) => {
+    const session = await context.queryClient.ensureQueryData(sessionOptions)
+
+    if (session) {
+      throw redirect({ to: '/dashboard' })
+    }
+  },
+  component: AuthPage,
+})
+```
+
+## Interceptor de sessão expirada
+
+O client oRPC intercepta respostas 401 e redireciona automaticamente para o login:
+
+```ts title="apps/web/src/lib/orpc.ts"
+export const link = new RPCLink({
+  url: '/rpc',
+  async fetch(input, options) {
+    const response = await globalThis.fetch(input, {
+      ...options,
+      credentials: 'include',
+    })
+
+    if (response.status === 401 && !redirecionando) {
+      redirecionando = true
+      window.location.href = '/login?reason=session-expired'
+    }
+
+    return response
+  },
+})
+```
+
+<Callout type="info">
+O parâmetro `?reason=session-expired` faz a página de login exibir um alerta: "Sua sessão expirou. Faça login novamente."
+</Callout>
+
+## Dados extras do usuário
+
+<Callout type="error">
+**Não crie um domínio `User` separado no `core`.** Para adicionar campos ao usuário (telefone, bio, avatar), use `additionalFields` do Better Auth. Um domínio User só se justifica com lógica complexa como gamificação, reputação ou multi-tenancy.
+</Callout>
+
+## Checklist de nova rota protegida
+
+<Steps>
+<Step>
+
+### Crie o arquivo em `_auth/`
+
+Coloque o arquivo dentro de `apps/web/src/routes/_auth/`. Ele será protegido automaticamente pelo layout.
+
+</Step>
+<Step>
+
+### Use `createFileRoute`
+
+```ts
+export const Route = createFileRoute('/_auth/minha-rota')({
+  component: MinhaRotaPage,
+})
+```
+
+</Step>
+<Step>
+
+### Pré-carregue dados no loader (opcional)
+
+```ts
+export const Route = createFileRoute('/_auth/minha-rota')({
+  loader: async ({ context }) => {
+    await context.queryClient.ensureQueryData(minhaQueryOptions)
+  },
+  component: MinhaRotaPage,
+})
+```
+
+</Step>
+<Step>
+
+### Adicione à navegação
+
+Registre a rota em `apps/web/src/lib/navigation.ts` com label, ícone e path.
+
+</Step>
+</Steps>

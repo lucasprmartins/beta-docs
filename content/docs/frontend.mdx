@@ -1,0 +1,444 @@
+---
+title: Frontend
+description: Rotas, data fetching, componentes e estilização com React 19, TanStack e DaisyUI.
+icon: Monitor
+---
+
+O frontend vive em `apps/web` e usa **React 19** com **TanStack Router** (file-based routing), **TanStack Query** (data fetching) e **DaisyUI** + **Tailwind CSS** (estilização).
+
+<Files>
+  <Folder name="apps/web/src" defaultOpen>
+    <Folder name="routes" defaultOpen>
+      <File name="__root.tsx" />
+      <File name="index.tsx" />
+      <File name="login.tsx" />
+      <File name="_auth.tsx" />
+      <Folder name="_auth">
+        <File name="dashboard.tsx" />
+      </Folder>
+    </Folder>
+    <Folder name="features" />
+    <Folder name="components" />
+    <Folder name="layout">
+      <File name="header.tsx" />
+      <File name="sidebar.tsx" />
+    </Folder>
+    <Folder name="lib">
+      <File name="orpc.ts" />
+      <File name="auth.tsx" />
+      <File name="navigation.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+## Rotas
+
+O TanStack Router gera o route tree automaticamente a partir da estrutura de arquivos — **nunca edite `routeTree.gen.ts`**.
+
+### Convenções de arquivo
+
+| Arquivo / Prefixo | Função |
+|-------------------|--------|
+| `__root.tsx` | Layout raiz (envolve toda a app) |
+| `index.tsx` | Rota exata do diretório (`/`) |
+| `_auth.tsx` | Layout pathless — protege rotas filhas sem adicionar segmento na URL |
+| `_auth/dashboard.tsx` | Rota protegida: `/dashboard` |
+| `$param.tsx` | Segmento dinâmico (ex: `$postId.tsx` → `/posts/123`) |
+| `$.tsx` | Catch-all (splat route) |
+
+<Callout type="info">
+Prefixo `_` = layout pathless. Agrupa e protege rotas **sem afetar a URL**. Tudo dentro de `_auth/` exige sessão automaticamente.
+</Callout>
+
+### Ciclo de vida
+
+```
+beforeLoad (pode entrar?) → loader (busca dados) → component (renderiza)
+```
+
+- `beforeLoad` falhou → loader **não executa**, redireciona
+- `loader` garante dados no cache → componente renderiza **sem loading spinner**
+
+### Criando uma rota
+
+Toda rota usa `createFileRoute`:
+
+```ts title="apps/web/src/routes/_auth/produtos.tsx"
+import { createFileRoute } from '@tanstack/react-router'
+
+export const Route = createFileRoute('/_auth/produtos')({
+  loader: async ({ context }) => {
+    await context.queryClient.ensureQueryData(produtosQueryOptions)
+  },
+  component: ProdutosPage,
+})
+
+function ProdutosPage() {
+  const { data } = useSuspenseQuery(produtosQueryOptions)
+  // renderiza com dados já prontos
+}
+```
+
+<Callout type="warn">
+Sempre `await` o `ensureQueryData` no loader — isso garante que o componente renderiza com os dados prontos, sem loading state.
+</Callout>
+
+## Data fetching
+
+O oRPC client conecta o frontend à API com tipagem completa. Dois exports principais:
+
+| Export | Uso | Exemplo |
+|--------|-----|---------|
+| `orpc` | Queries e loaders | `orpc.produto.listar.queryOptions({ input })` |
+| `client` | Mutations e chamadas imperativas | `client.produto.criar({ nome, preco })` |
+
+### Queries
+
+<Tabs items={['Query simples', 'Com loader (recomendado)', 'Infinite query']}>
+<Tab value="Query simples">
+
+Para dados que não precisam estar prontos antes do render:
+
+```tsx
+import { orpc } from '@/lib/orpc'
+
+function CategoriaList() {
+  const { data, isPending } = useQuery(
+    orpc.categoria.listar.queryOptions({ input: { cursor: 0, limite: 10 } })
+  )
+
+  if (isPending) return <div className="skeleton h-32 w-full" />
+  // ...
+}
+```
+
+</Tab>
+<Tab value="Com loader (recomendado)">
+
+Dados prontos antes do render — sem loading spinner na navegação:
+
+```tsx
+const produtosOptions = orpc.produto.listar.queryOptions({
+  input: { cursor: 0, limite: 10 },
+})
+
+// Loader pré-carrega
+export const Route = createFileRoute('/_auth/produtos')({
+  loader: async ({ context }) => {
+    await context.queryClient.ensureQueryData(produtosOptions)
+  },
+  component: ProdutosPage,
+})
+
+// Componente lê do cache
+function ProdutosPage() {
+  const { data } = useSuspenseQuery(produtosOptions)
+  // renderiza imediatamente
+}
+```
+
+<Callout type="info">
+Use o **mesmo `queryOptions()`** no loader e no componente — single source of truth.
+</Callout>
+
+</Tab>
+<Tab value="Infinite query">
+
+Paginação incremental — **sem loader**, carrega no client:
+
+```tsx
+function ProdutosList() {
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useInfiniteQuery(
+      orpc.produto.listar.infiniteQueryOptions({
+        input: { limite: 10 },
+        getNextPageParam: (lastPage) => lastPage.proximoCursor,
+        initialPageParam: 0,
+      })
+    )
+
+  const itens = data?.pages.flatMap((p) => p.itens) ?? []
+  // ...
+}
+```
+
+</Tab>
+</Tabs>
+
+### Mutations
+
+<Tabs items={['Invalidação (padrão)', 'Optimistic update']}>
+<Tab value="Invalidação (padrão)">
+
+Após criar/editar, invalide o cache para buscar dados atualizados:
+
+```tsx
+const queryClient = useQueryClient()
+
+const { mutateAsync: criar, isPending } = useMutation({
+  mutationFn: (input) => client.categoria.criar(input),
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ['categoria'] })
+  },
+})
+```
+
+</Tab>
+<Tab value="Optimistic update">
+
+Para feedback imediato (toggles, favoritos, exclusões de lista):
+
+```tsx
+const { mutate: ativar } = useMutation({
+  mutationFn: (id) => client.produto.ativar({ id }),
+  onMutate: async (id) => {
+    await queryClient.cancelQueries({ queryKey: ['produto', 'listar'] })
+    const anterior = queryClient.getQueryData(['produto', 'listar'])
+
+    queryClient.setQueryData(['produto', 'listar'], (old) =>
+      old?.map((p) => (p.id === id ? { ...p, ativo: true } : p))
+    )
+
+    return { anterior }
+  },
+  onError: (_err, _id, context) => {
+    queryClient.setQueryData(['produto', 'listar'], context?.anterior)
+  },
+  onSettled: () => {
+    queryClient.invalidateQueries({ queryKey: ['produto', 'listar'] })
+  },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Tratamento de erros
+
+| Código | Quando | Feedback sugerido |
+|--------|--------|-------------------|
+| `NOT_FOUND` | Recurso não existe | Redireciona ou exibe mensagem |
+| `CONFLICT` | Duplicata (nome já existe) | Destacar campo no formulário |
+| `BAD_REQUEST` | Operação inválida | Alert com mensagem |
+| `UNAUTHORIZED` | Sessão expirada | Redirect automático via interceptor |
+| `FORBIDDEN` | Sem permissão | Alert ou esconder ação na UI |
+
+## Componentes
+
+### Estrutura de arquivo
+
+```tsx
+// 1. Imports
+import { useState } from 'react'
+
+// 2. Types
+interface Props { /* ... */ }
+
+// 3. Constantes e helpers
+const LIMITE = 10
+
+// 4. Sub-componentes (no mesmo arquivo, acima do principal)
+function ItemCard({ item }: { item: Item }) {
+  return <div className="card">{item.nome}</div>
+}
+
+// 5. Componente principal (export)
+export function ItemList({ items }: Props) {
+  return items.map((item) => <ItemCard item={item} key={item.id} />)
+}
+```
+
+### Regras
+
+<Callout type="error">
+**Evite `useEffect`.** Use as alternativas:
+
+| Em vez de `useEffect` para... | Use |
+|-------------------------------|-----|
+| Buscar dados | TanStack Query (`useQuery`, `useSuspenseQuery`) |
+| Computar valores derivados | `useMemo` |
+| Reagir a evento do usuário | Event handler |
+| Pré-carregar dados | `loader` com `ensureQueryData` |
+</Callout>
+
+<Tabs items={['Renderização condicional', 'Formulários', 'React 19']}>
+<Tab value="Renderização condicional">
+
+Use `<Activity>` para preservar estado em vez de `&&` que desmonta o componente:
+
+```tsx
+// ✅ Preserva estado quando esconde
+<Activity mode={mostrar ? 'visible' : 'hidden'}>
+  <PainelComplexo />
+</Activity>
+
+// ❌ Desmonta e perde estado
+{mostrar && <PainelComplexo />}
+```
+
+</Tab>
+<Tab value="Formulários">
+
+Estado local com `useState`, validação no submit, botão desabilitado durante envio:
+
+```tsx
+function CriarCategoriaForm() {
+  const [error, setError] = useState<string | null>(null)
+  const { mutateAsync: criar, isPending } = useMutation({
+    mutationFn: (input) => client.categoria.criar(input),
+  })
+
+  const handleSubmit = async (
+    e: React.SyntheticEvent<HTMLFormElement, SubmitEvent>
+  ) => {
+    e.preventDefault()
+    setError(null)
+    const formData = new FormData(e.currentTarget)
+
+    const result = await criar({
+      nome: formData.get('nome') as string,
+      descricao: formData.get('descricao') as string,
+    })
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input name="nome" className="input" required />
+      <button className="btn btn-primary" disabled={isPending}>
+        {isPending ? <span className="loading loading-ring loading-xs" /> : 'Criar'}
+      </button>
+    </form>
+  )
+}
+```
+
+<Callout type="warn">
+No React 19, use `React.SyntheticEvent<HTMLFormElement, SubmitEvent>` em vez de `FormEvent`.
+</Callout>
+
+</Tab>
+<Tab value="React 19">
+
+- Use `isPending` (não `isLoading`) no TanStack Query v5
+- Use `useTransition` para atualizações não urgentes
+- Passe `from` ao usar `useNavigate` para tipagem correta
+
+```tsx
+const navigate = useNavigate({ from: '/_auth/produtos' })
+navigate({ to: '/produto/$id', params: { id: '1' } })
+```
+
+</Tab>
+</Tabs>
+
+## Estilização
+
+O Beta usa **DaisyUI** (componentes) + **Tailwind CSS** (utilities) com suporte a temas.
+
+### Componentes DaisyUI
+
+Prefira componentes semânticos do DaisyUI em vez de montar do zero com Tailwind:
+
+| Componente | Classe | Uso |
+|------------|--------|-----|
+| Botão | `btn btn-primary` | Ações |
+| Card | `card bg-base-200` | Containers |
+| Input | `input` | Campos de texto |
+| Alert | `alert alert-error` | Mensagens |
+| Modal | `modal` | Diálogos |
+| Skeleton | `skeleton h-8 w-full` | Loading states |
+| Badge | `badge badge-primary` | Labels |
+
+### Cores semânticas
+
+Use classes semânticas que respeitam o tema ativo:
+
+```tsx
+// ✅ Semântico — adapta ao tema
+<div className="bg-base-100 text-base-content">
+  <button className="btn btn-primary">Salvar</button>
+</div>
+
+// ❌ Hardcoded — ignora o tema
+<div className="bg-white text-gray-900">
+  <button className="bg-blue-500 text-white">Salvar</button>
+</div>
+```
+
+| Classe | Uso |
+|--------|-----|
+| `bg-base-100` | Fundo principal |
+| `bg-base-200` | Fundo elevado (cards, sidebars) |
+| `text-base-content` | Texto principal |
+| `text-base-content/60` | Texto secundário |
+| `btn-primary` | Ação principal |
+| `btn-ghost` | Ação sutil |
+
+### Ícones
+
+**Phosphor Icons** com três pesos:
+
+```tsx
+import { HouseIcon } from '@phosphor-icons/react'
+
+<HouseIcon weight="regular" />  {/* Informativo (padrão) */}
+<HouseIcon weight="bold" />     {/* Ações e botões */}
+<HouseIcon weight="fill" />     {/* Estado ativo */}
+```
+
+### Grid responsivo
+
+```tsx
+<div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+  {itens.map((item) => <Card key={item.id} item={item} />)}
+</div>
+```
+
+### Loading states
+
+<Tabs items={['Skeleton', 'Spinner no botão']}>
+<Tab value="Skeleton">
+
+Use `skeleton` com dimensões para representar o layout do conteúdo:
+
+```tsx
+<div className="flex flex-col gap-4">
+  <div className="skeleton h-6 w-28" />
+  <div className="skeleton h-4 w-full" />
+  <div className="skeleton h-4 w-3/4" />
+</div>
+```
+
+</Tab>
+<Tab value="Spinner no botão">
+
+Substitua o texto por um spinner durante o envio:
+
+```tsx
+<button className="btn btn-primary" disabled={isPending}>
+  {isPending ? (
+    <>
+      <span className="loading loading-ring loading-xs" />
+      Salvando...
+    </>
+  ) : 'Salvar'}
+</button>
+```
+
+</Tab>
+</Tabs>
+
+## Navegação
+
+Ao adicionar uma nova rota, registre no menu em `navigation.ts`:
+
+```ts title="apps/web/src/lib/navigation.ts"
+import { HouseIcon, PackageIcon } from '@phosphor-icons/react'
+
+export const menuItems = [
+  { label: 'Dashboard', icon: HouseIcon, to: '/dashboard' },
+  { label: 'Produtos', icon: PackageIcon, to: '/produtos' },
+]
+```
+
+O `Header` e `Sidebar` consomem essa lista automaticamente, alternando entre `weight="bold"` (inativo) e `weight="fill"` (ativo).

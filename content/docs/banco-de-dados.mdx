@@ -1,0 +1,339 @@
+---
+title: Banco de Dados
+description: Schema, repositórios, migrations e seed com Drizzle ORM + PostgreSQL.
+icon: Database
+---
+
+O Beta usa **Drizzle ORM** com **PostgreSQL** e o driver nativo do **Bun SQL**. Todo o banco de dados vive em `packages/infra`.
+
+<Files>
+  <Folder name="packages/infra/src" defaultOpen>
+    <Folder name="db" defaultOpen>
+      <File name="index.ts" />
+      <File name="seed.ts" />
+      <Folder name="schema" defaultOpen>
+        <File name="auth.ts" />
+        <File name="{dominio}.ts" />
+      </Folder>
+      <Folder name="repositories" defaultOpen>
+        <File name="{dominio}.ts" />
+      </Folder>
+      <Folder name="migrations" />
+    </Folder>
+    <File name="env.ts" />
+    <File name="logger.ts" />
+  </Folder>
+  <File name="drizzle.config.ts" />
+</Files>
+
+## Conexão
+
+O client é criado com o driver nativo do Bun:
+
+```ts title="packages/infra/src/db/index.ts"
+import { SQL } from 'bun'
+import { drizzle } from 'drizzle-orm/bun-sql'
+import { env } from '../env'
+
+const client = new SQL(env.DATABASE_URL)
+export const db = drizzle({ client })
+```
+
+<Callout type="info">
+A variável `DATABASE_URL` é validada com Zod em `env.ts`. Se estiver faltando ou inválida, a aplicação encerra com erro detalhado antes de subir.
+</Callout>
+
+## Schema
+
+Toda tabela segue estas convenções:
+
+<Callout type="warn">
+**Obrigatório em toda tabela:**
+- `.enableRLS()` — Row Level Security habilitado
+- `createdAt` e `updatedAt` — timestamps com timezone
+- Nomes no singular e minúsculo (`produto`, não `produtos`)
+</Callout>
+
+<Tabs items={['CRUD Simples', 'Domínio Rico']}>
+<Tab value="CRUD Simples">
+
+Tabela direta sem relações complexas:
+
+```ts title="packages/infra/src/db/schema/example-crud.ts"
+import { pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core'
+
+export const categoria = pgTable('categoria', {
+  id: serial('id').primaryKey(),
+  nome: text('nome').notNull().unique(),
+  descricao: text('descricao').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+}).enableRLS()
+```
+
+</Tab>
+<Tab value="Domínio Rico">
+
+Tabela com tipos mais ricos e campos opcionais:
+
+```ts title="packages/infra/src/db/schema/example-domain.ts"
+import {
+  boolean, integer, numeric, pgTable,
+  serial, text, timestamp
+} from 'drizzle-orm/pg-core'
+
+export const produto = pgTable('produto', {
+  id: serial('id').primaryKey(),
+  nome: text('nome').notNull().unique(),
+  descricao: text('descricao').notNull(),
+  preco: numeric('preco', { precision: 10, scale: 2 }).notNull(),
+  estoque: integer('estoque').notNull().default(0),
+  ativo: boolean('ativo').notNull().default(true),
+  imagemUrl: text('imagem_url'),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+    .defaultNow()
+    .$onUpdate(() => new Date())
+    .notNull(),
+}).enableRLS()
+```
+
+<Callout type="error">
+**Nunca use `real` para valores monetários.** Use `numeric("col", { precision: 10, scale: 2 })`. O tipo `numeric` retorna `string` do banco — converta com `Number()` na leitura e `String()` na escrita.
+</Callout>
+
+</Tab>
+</Tabs>
+
+## Repositórios
+
+Repositórios implementam os contratos do `core` e seguem padrões consistentes:
+
+### Função `exportar()`
+
+Todo repositório tem um helper que converte a row do banco para o DTO do contrato — excluindo `createdAt` e `updatedAt`:
+
+```ts title="packages/infra/src/db/repositories/example-crud.ts"
+function exportar(row: typeof categoria.$inferSelect): CategoriaData {
+  return {
+    id: row.id,
+    nome: row.nome,
+    descricao: row.descricao,
+  }
+}
+```
+
+### Padrões de query
+
+<Tabs items={['Buscar por ID', 'Listar (paginado)', 'Criar', 'Atualizar', 'Deletar']}>
+<Tab value="Buscar por ID">
+
+Use `.limit(1)` e desestruturação para queries de item único:
+
+```ts
+async buscarPorId(id) {
+  const [row] = await db
+    .select()
+    .from(categoria)
+    .where(eq(categoria.id, id))
+    .limit(1)
+
+  return row ? exportar(row) : null
+}
+```
+
+</Tab>
+<Tab value="Listar (paginado)">
+
+Paginação por cursor — busca `limite + 1` para saber se tem mais:
+
+```ts
+async listar({ cursor, limite }) {
+  const rows = await db
+    .select()
+    .from(categoria)
+    .limit(limite + 1)
+    .offset(cursor)
+
+  const temMais = rows.length > limite
+  const itens = (temMais ? rows.slice(0, limite) : rows).map(exportar)
+
+  return {
+    itens,
+    proximoCursor: temMais ? cursor + limite : null,
+  }
+}
+```
+
+</Tab>
+<Tab value="Criar">
+
+Sempre use `.returning()` para obter o registro criado:
+
+```ts
+async criar(data) {
+  const [row] = await db
+    .insert(categoria)
+    .values({
+      nome: data.nome,
+      descricao: data.descricao,
+    })
+    .returning()
+
+  return row ? exportar(row) : null
+}
+```
+
+</Tab>
+<Tab value="Atualizar">
+
+Nunca inclua `id`, `createdAt` ou `updatedAt` no `.set()`:
+
+```ts
+async atualizar(id, data) {
+  const [row] = await db
+    .update(categoria)
+    .set(data)
+    .where(eq(categoria.id, id))
+    .returning()
+
+  return row ? exportar(row) : null
+}
+```
+
+</Tab>
+<Tab value="Deletar">
+
+Use `.returning()` para confirmar que o registro existia:
+
+```ts
+async deletar(id) {
+  const result = await db
+    .delete(categoria)
+    .where(eq(categoria.id, id))
+    .returning()
+
+  return result.length > 0
+}
+```
+
+</Tab>
+</Tabs>
+
+### Transações
+
+Para operações atômicas, use `db.transaction()`. O rollback é automático se uma exceção for lançada:
+
+```ts
+await db.transaction(async (tx) => {
+  const [pedido] = await tx
+    .insert(pedidoTable)
+    .values({ clienteId })
+    .returning()
+
+  await tx
+    .insert(itemPedidoTable)
+    .values(itens.map(item => ({ ...item, pedidoId: pedido.id })))
+})
+```
+
+<Callout type="warn">
+Dentro da transação, use **`tx`** em vez de `db`. Usar `db` faz a query rodar fora da transação.
+</Callout>
+
+## Migrations
+
+Migrations são geradas automaticamente a partir do schema — **nunca edite manualmente** os arquivos em `src/db/migrations/`.
+
+<Steps>
+<Step>
+
+### Altere o schema
+
+Modifique ou crie um arquivo em `packages/infra/src/db/schema/`.
+
+</Step>
+<Step>
+
+### Gere a migration
+
+```bash
+bun db:generate
+```
+
+O Drizzle compara o schema atual com o estado do banco e gera o SQL necessário.
+
+</Step>
+<Step>
+
+### Aplique a migration
+
+```bash
+bun db:migrate
+```
+
+</Step>
+</Steps>
+
+<Callout type="info">
+Para visualizar e explorar o banco, use o Drizzle Studio:
+
+```bash
+bun db:studio
+```
+</Callout>
+
+## Seed
+
+O seed usa `drizzle-seed` para popular o banco com dados de teste:
+
+```ts title="packages/infra/src/db/seed.ts"
+import { reset, seed } from 'drizzle-seed'
+import { db } from './index'
+import { categoria } from './schema/example-crud'
+
+const schema = { categoria }
+
+async function main() {
+  await reset(db, schema)
+
+  await seed(db, schema).refine((f) => ({
+    categoria: {
+      count: 20,
+      columns: {
+        nome: f.fullName(),
+        descricao: f.loremIpsum(),
+      },
+    },
+  }))
+}
+
+main()
+```
+
+<Tabs items={['Comandos', 'O que faz cada um']}>
+<Tab value="Comandos">
+
+| Comando | Descrição |
+|---------|-----------|
+| `bun db:generate` | Gera migration a partir do schema |
+| `bun db:migrate` | Aplica migrations pendentes |
+| `bun db:studio` | Abre o Drizzle Studio (GUI) |
+| `bun db:seed` | Popula o banco com dados de teste |
+
+</Tab>
+<Tab value="O que faz cada um">
+
+- **`reset(db, schema)`** — trunca as tabelas com CASCADE
+- **`seed(db, schema)`** — gera dados aleatórios para todas as tabelas
+- **`.refine()`** — customiza a quantidade e os geradores por coluna (nome, email, lorem, etc.)
+
+</Tab>
+</Tabs>

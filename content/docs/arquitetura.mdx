@@ -1,0 +1,329 @@
+---
+title: Arquitetura
+description: Como o Beta organiza o código em camadas com arquitetura limpa.
+icon: Layers
+---
+
+O Beta segue uma **arquitetura limpa orientada a domínios de negócio**. Cada pacote tem uma responsabilidade clara e as dependências fluem em uma única direção — de dentro para fora.
+
+## Visão geral
+
+<div className="not-prose flex flex-col items-center gap-3 my-8">
+  <div className="w-full rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-center">
+    <div className="font-semibold text-blue-400">web</div>
+    <div className="text-xs text-fd-muted-foreground">React 19 · TanStack Router/Query · DaisyUI</div>
+  </div>
+
+  <div className="text-xs text-fd-muted-foreground">oRPC client (tipado) ↓</div>
+
+  <div className="w-full rounded-xl border border-purple-500/30 bg-purple-500/10 p-4 text-center">
+    <div className="font-semibold text-purple-400">server</div>
+    <div className="text-xs text-fd-muted-foreground">Elysia · orquestra api + auth + infra</div>
+  </div>
+
+  <div className="text-xs text-fd-muted-foreground">↓</div>
+
+  <div className="w-full grid grid-cols-3 gap-3">
+    <div className="rounded-xl border border-green-500/30 bg-green-500/10 p-4 text-center">
+      <div className="font-semibold text-green-400">api</div>
+      <div className="text-xs text-fd-muted-foreground">oRPC</div>
+    </div>
+    <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 text-center">
+      <div className="font-semibold text-yellow-400">auth</div>
+      <div className="text-xs text-fd-muted-foreground">Better Auth</div>
+    </div>
+    <div className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-4 text-center">
+      <div className="font-semibold text-orange-400">infra</div>
+      <div className="text-xs text-fd-muted-foreground">Drizzle + PG</div>
+    </div>
+  </div>
+
+  <div className="text-xs text-fd-muted-foreground">↓</div>
+
+  <div className="w-2/3 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-center">
+    <div className="font-semibold text-red-400">core</div>
+    <div className="text-xs text-fd-muted-foreground">Lógica pura · Zero dependências</div>
+  </div>
+</div>
+
+## Pacotes
+
+<Tabs items={['core', 'infra', 'api', 'auth', 'server', 'web']}>
+<Tab value="core">
+
+### Lógica de negócio pura
+
+O coração do sistema. Não importa nenhum framework, banco ou lib externa. Contém:
+
+- **Contratos** — interfaces de repositório e DTOs que as outras camadas implementam
+- **Entidades** — objetos com estado e regras de negócio (domínio rico)
+- **Application** — use cases que orquestram operações
+
+<Files>
+  <Folder name="packages/core/src" defaultOpen>
+    <Folder name="contracts" defaultOpen>
+      <File name="{Dominio}Data.ts" />
+      <File name="{Dominio}Repository.ts" />
+    </Folder>
+    <Folder name="domains">
+      <File name="{Dominio}.ts" />
+    </Folder>
+    <Folder name="application">
+      <File name="{acao}{Dominio}.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+<Callout type="info">
+O `core` nunca importa de outros pacotes. Isso garante que a lógica de negócio possa ser testada isoladamente sem banco, HTTP ou qualquer dependência externa.
+</Callout>
+
+</Tab>
+<Tab value="infra">
+
+### Banco de dados e integrações
+
+Implementa os contratos definidos no `core` usando tecnologias concretas.
+
+- **Schema** — tabelas Drizzle com RLS, timestamps e tipagem
+- **Repositórios** — implementações concretas das interfaces do core
+- **Logger** — Pino para logs estruturados (nunca `console.log`)
+- **Env** — variáveis de ambiente validadas com Zod
+
+<Files>
+  <Folder name="packages/infra/src" defaultOpen>
+    <Folder name="database" defaultOpen>
+      <File name="schema.ts" />
+      <File name="client.ts" />
+      <Folder name="migrations" />
+    </Folder>
+    <Folder name="repositories">
+      <File name="{dominio}Repository.ts" />
+    </Folder>
+    <File name="logger.ts" />
+    <File name="env.ts" />
+  </Folder>
+</Files>
+
+</Tab>
+<Tab value="api">
+
+### Rotas da API
+
+Routers oRPC que expõem os use cases via HTTP de forma type-safe.
+
+- **Rotas públicas e protegidas** — middleware de autenticação por rota
+- **Validação** — schemas Zod com `.describe()` para docs OpenAPI
+- **Erros tipados** — `.errors()` com códigos HTTP semânticos
+
+<Files>
+  <Folder name="packages/api/src" defaultOpen>
+    <Folder name="router" defaultOpen>
+      <File name="{dominio}.ts" />
+      <File name="index.ts" />
+    </Folder>
+    <Folder name="middleware">
+      <File name="auth.ts" />
+    </Folder>
+    <Folder name="contract">
+      <File name="{dominio}.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+</Tab>
+<Tab value="auth">
+
+### Autenticação
+
+Better Auth configurado com plugins de username, admin e OpenAPI.
+
+- **Server** — configuração, sessões, plugins
+- **Client** — hooks React: `useSignIn()`, `useSignUp()`, `useSignOut()`
+- **Proteção de rotas** — via `beforeLoad` no TanStack Router
+
+<Files>
+  <Folder name="packages/auth/src" defaultOpen>
+    <File name="server.ts" />
+    <File name="client.ts" />
+  </Folder>
+</Files>
+
+<Callout type="warn">
+Dados extras do usuário devem ser adicionados via `additionalFields` do Better Auth — não crie um domínio `User` separado no `core`.
+</Callout>
+
+</Tab>
+<Tab value="server">
+
+### Orquestrador HTTP
+
+Elysia que unifica todas as camadas em um servidor HTTP.
+
+- Monta os routers oRPC em `/rpc`
+- Conecta o auth handler
+- Configura CORS, logging e error handling
+
+<Files>
+  <Folder name="apps/server/src" defaultOpen>
+    <File name="index.ts" />
+  </Folder>
+</Files>
+
+<Callout type="info">
+Nunca use `process.env` diretamente. Importe de `@app/infra/env` que valida com Zod. Para logs, use `logger` de `@app/infra/logger`.
+</Callout>
+
+</Tab>
+<Tab value="web">
+
+### Frontend
+
+React 19 com TanStack Router (file-based routing) e TanStack Query para data fetching.
+
+- **Rotas** — geradas automaticamente a partir da estrutura de arquivos
+- **Loaders** — pré-carregam dados antes da renderização (sem loading spinners)
+- **Estilização** — DaisyUI + Tailwind CSS com suporte a temas
+- **Ícones** — Phosphor Icons
+
+<Files>
+  <Folder name="apps/web/src" defaultOpen>
+    <Folder name="routes" defaultOpen>
+      <File name="__root.tsx" />
+      <File name="index.tsx" />
+      <Folder name="_auth">
+        <File name="dashboard.tsx" />
+      </Folder>
+    </Folder>
+    <Folder name="components" />
+    <Folder name="lib" />
+  </Folder>
+</Files>
+
+</Tab>
+</Tabs>
+
+## Fluxo de dependências
+
+Cada pacote só importa da camada abaixo — nunca ao contrário:
+
+| Pacote | Importa de |
+|--------|------------|
+| `core` | Nenhum — é puro |
+| `infra` | `core` (implementa contratos) |
+| `api` | `core` (use cases) e `infra` (repositórios) |
+| `auth` | `infra` (banco para sessões) |
+| `server` | `api`, `auth`, `infra` |
+| `web` | `auth` (client) e API via oRPC client tipado |
+
+<Callout type="error">
+Dependências circulares quebram a arquitetura. Se `infra` precisar de algo do `api`, o design precisa ser repensado — provavelmente falta um contrato no `core`.
+</Callout>
+
+## Dois padrões de domínio
+
+O template suporta dois padrões dependendo da complexidade do domínio:
+
+<Tabs items={['CRUD Simples', 'Domínio Rico']}>
+<Tab value="CRUD Simples">
+
+Para domínios **sem lógica de negócio** — passthrough direto para o repositório.
+
+- Não precisa de entidade
+- O use case chama o repositório diretamente
+- Usa apenas `Data` e `Repository` do contrato
+
+```ts title="packages/core/src/contracts/produto.ts"
+export interface ProdutoData {
+  id: string
+  nome: string
+  preco: number
+}
+
+export interface ProdutoRepository {
+  buscarPorId(id: string): Promise<ProdutoData | null>
+  listar(): Promise<ProdutoData[]>
+  criar(data: Omit<ProdutoData, 'id'>): Promise<ProdutoData>
+  atualizar(id: string, data: Partial<ProdutoData>): Promise<ProdutoData>
+  deletar(id: string): Promise<void>
+}
+```
+
+<Callout type="info">
+Use CRUD Simples quando o domínio é apenas dados sem regras. Se invariantes ou validações surgirem depois, migre para Domínio Rico.
+</Callout>
+
+</Tab>
+<Tab value="Domínio Rico">
+
+Para domínios **com regras de negócio**, validações e invariantes.
+
+- Entidade com construtor privado protege o estado
+- Factory methods: `criar(input)` valida e retorna, `restaurar(data)` reconstrói do banco
+- `exportar()` converte para DTO
+- Retorna `null` para falhas esperadas, `throw` para erros de sistema
+
+```ts title="packages/core/src/domains/pedido.ts"
+export class Pedido {
+  private constructor(
+    private readonly id: string,
+    private readonly itens: ItemPedido[],
+    private status: StatusPedido,
+  ) {}
+
+  static criar(input: CriarPedidoInput): Pedido | null {
+    if (input.itens.length === 0) return null
+    return new Pedido(crypto.randomUUID(), input.itens, 'pendente')
+  }
+
+  static restaurar(data: PedidoData): Pedido {
+    return new Pedido(data.id, data.itens, data.status)
+  }
+
+  confirmar(): boolean {
+    if (this.status !== 'pendente') return false
+    this.status = 'confirmado'
+    return true
+  }
+
+  get total(): number {
+    return this.itens.reduce((acc, item) => acc + item.preco * item.quantidade, 0)
+  }
+
+  exportar(): PedidoData {
+    return { id: this.id, itens: this.itens, status: this.status, total: this.total }
+  }
+}
+```
+
+O use case orquestra o fluxo completo:
+
+<Steps>
+<Step>
+
+### Buscar do banco
+O repositório retorna os dados brutos (`Data`).
+
+</Step>
+<Step>
+
+### Restaurar entidade
+`Entidade.restaurar(data)` reconstrói o objeto com seu estado e métodos.
+
+</Step>
+<Step>
+
+### Executar operação
+Chama o método da entidade que aplica a regra de negócio.
+
+</Step>
+<Step>
+
+### Exportar e persistir
+`entidade.exportar()` gera o DTO, que é salvo pelo repositório.
+
+</Step>
+</Steps>
+
+</Tab>
+</Tabs>

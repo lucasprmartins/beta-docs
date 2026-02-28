@@ -1,31 +1,38 @@
 ---
-title: Hello World
-description: Your favourite docs framework.
+title: Introdução
+description: Template full-stack TypeScript com arquitetura limpa em monorepo.
 icon: Rocket
 ---
 
-Hey there! Fumadocs is the docs framework that also works on Tanstack Start!
+<div className="flex flex-wrap items-center gap-4 mb-8 not-prose">
+  <a href="https://bun.sh/"><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/bun/bun-original.svg" width="28" title="Bun" alt="Bun" /></a>
+  <a href="https://elysiajs.com/"><img src="https://raw.githubusercontent.com/elysiajs/documentation/main/docs/public/assets/elysia.svg" width="28" title="Elysia" alt="Elysia" /></a>
+  <a href="https://orpc.unnoq.com/"><img src="https://orpc.unnoq.com/icon.svg" width="28" title="oRPC" alt="oRPC" /></a>
+  <a href="https://www.better-auth.com/"><img src="https://svgl.app/library/better-auth_dark.svg" width="28" title="Better Auth" alt="Better Auth" /></a>
+  <a href="https://www.postgresql.org/"><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/postgresql/postgresql-original.svg" width="28" title="PostgreSQL" alt="PostgreSQL" /></a>
+  <a href="https://orm.drizzle.team/"><img src="https://cdn.simpleicons.org/drizzle" width="28" title="Drizzle ORM" alt="Drizzle ORM" /></a>
+  <a href="https://react.dev/"><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/react/react-original.svg" width="28" title="React" alt="React" /></a>
+  <a href="https://tanstack.com/router"><img src="https://tanstack.com/images/logos/logo-color-100.png" width="28" title="TanStack" alt="TanStack" /></a>
+  <a href="https://tailwindcss.com/"><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/tailwindcss/tailwindcss-original.svg" width="28" title="Tailwind CSS" alt="Tailwind CSS" /></a>
+  <a href="https://daisyui.com/"><img src="https://img.daisyui.com/images/daisyui/mark-static.svg" width="28" title="DaisyUI" alt="DaisyUI" /></a>
+</div>
 
-## Heading
+Beta é um template full-stack TypeScript em monorepo projetado para você começar a construir funcionalidades desde o primeiro minuto — sem perder tempo decidindo arquitetura, configurando autenticação ou conectando camadas.
 
-Hello World!
+Toda a estrutura segue uma **arquitetura limpa orientada a domínios de negócio**: a lógica de negócio vive isolada no `core`, a infraestrutura implementa os contratos, e a API expõe tudo de forma type-safe do banco até o frontend. Autenticação, banco de dados, validação e estilização já vêm configurados e integrados.
+
+## O que vem pronto
+
+- **Monorepo com Turbo** — builds incrementais, cache inteligente e tasks paralelas
+- **API type-safe de ponta a ponta** — oRPC conecta server e client com tipagem completa, sem code generation
+- **Autenticação completa** — login, registro, sessões e proteção de rotas via Better Auth
+- **Banco de dados com migrations** — Drizzle ORM com PostgreSQL, schema em TypeScript e RLS habilitado
+- **Frontend moderno** — React 19 com TanStack Router (file-based) e TanStack Query para data fetching
+- **Estilização com componentes** — Tailwind CSS + DaisyUI com suporte a temas
+- **Deploy simplificado** — setup com Railway em um comando, ou traga seu próprio PostgreSQL
+
+## Próximos passos
 
 <Cards>
-  <Card title="Learn more about Tanstack Start" href="https://tanstack.com/start" />
-  <Card title="Learn more about Fumadocs" href="https://fumadocs.dev" />
+  <Card title="Iniciando" description="Clone, configure e rode o template em minutos." href="/docs/iniciando" />
 </Cards>
-
-### CodeBlock
-
-```ts
-console.log('Hello World');
-```
-
-#### Table
-
-| Head                            | Description                         |
-| ------------------------------- | ----------------------------------- |
-| `hello`                         | Hello World                         |
-| very **important**              | Hey                                 |
-| _Surprisingly_                  | Fumadocs                            |
-| very long text that looks weird | hello world hello world hello world |

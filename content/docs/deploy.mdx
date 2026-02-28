@@ -1,0 +1,310 @@
+---
+title: Deploy
+description: Como fazer build, configurar variáveis de ambiente e deploy com Railway.
+icon: CloudUpload
+---
+
+O Beta suporta deploy com **Railway** (recomendado) ou qualquer plataforma que rode containers/Node. A arquitetura de produção usa três serviços: **proxy** (Caddy), **server** (Elysia compilado) e **web** (SPA estática).
+
+## Arquitetura de produção
+
+<div className="not-prose flex flex-col items-center gap-3 my-8">
+  <div className="w-full rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-center">
+    <div className="font-semibold text-blue-400">Usuário</div>
+  </div>
+
+  <div className="text-xs text-fd-muted-foreground">↓ HTTPS</div>
+
+  <div className="w-full rounded-xl border border-purple-500/30 bg-purple-500/10 p-4 text-center">
+    <div className="font-semibold text-purple-400">proxy (Caddy)</div>
+    <div className="text-xs text-fd-muted-foreground">Reverse proxy · Compressão · Headers de segurança</div>
+  </div>
+
+  <div className="w-full grid grid-cols-2 gap-3">
+    <div className="flex flex-col items-center gap-1">
+      <div className="text-xs text-fd-muted-foreground">/auth/* /rpc/* ↓</div>
+      <div className="w-full rounded-xl border border-green-500/30 bg-green-500/10 p-4 text-center">
+        <div className="font-semibold text-green-400">server</div>
+        <div className="text-xs text-fd-muted-foreground">Elysia (binário compilado)</div>
+      </div>
+    </div>
+    <div className="flex flex-col items-center gap-1">
+      <div className="text-xs text-fd-muted-foreground">/* ↓</div>
+      <div className="w-full rounded-xl border border-orange-500/30 bg-orange-500/10 p-4 text-center">
+        <div className="font-semibold text-orange-400">web</div>
+        <div className="text-xs text-fd-muted-foreground">SPA estática (Vite)</div>
+      </div>
+    </div>
+  </div>
+
+  <div className="text-xs text-fd-muted-foreground">↓</div>
+
+  <div className="w-1/2 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-center">
+    <div className="font-semibold text-red-400">PostgreSQL</div>
+  </div>
+</div>
+
+O **Caddy** roteia automaticamente:
+- `/auth/*` e `/rpc/*` → **server** (API + autenticação)
+- Tudo o resto → **web** (frontend estático)
+
+## Build
+
+Cada app tem seu próprio build:
+
+<Tabs items={['Server', 'Web', 'Proxy']}>
+<Tab value="Server">
+
+Compila para um **binário standalone** com Bun:
+
+```bash
+bun run build:server
+```
+
+```ts title="apps/server/package.json"
+"build": "bun build --compile src/index.ts --outfile server --minify"
+"start": "./server"
+```
+
+O binário resultante (`server`) roda sem precisar de Bun ou `node_modules` no ambiente de produção.
+
+<Callout type="info">
+A flag `--sql-preconnect` é usada em dev para pré-conectar ao PostgreSQL. Em produção, o binário compilado gerencia a conexão automaticamente.
+</Callout>
+
+</Tab>
+<Tab value="Web">
+
+Build estático com **Vite**:
+
+```bash
+bun run build:web
+```
+
+```ts title="apps/web/package.json"
+"build": "vite build"
+"start": "serve -s dist -p 3001"
+```
+
+Gera um diretório `dist/` com HTML, CSS e JS otimizados. Pode ser servido por qualquer servidor de arquivos estáticos.
+
+</Tab>
+<Tab value="Proxy">
+
+Container **Docker** com Caddy:
+
+```dockerfile title="apps/proxy/Dockerfile"
+FROM caddy:2-alpine
+COPY Caddyfile /etc/caddy/Caddyfile
+```
+
+O Caddyfile configura:
+- Compressão (zstd + gzip)
+- Headers de segurança (HSTS, CSP, X-Content-Type-Options)
+- Roteamento entre server e web
+
+</Tab>
+</Tabs>
+
+## Variáveis de ambiente
+
+<Tabs items={['Server', 'Web']}>
+<Tab value="Server">
+
+Configuradas em `apps/server/.env`:
+
+| Variável | Obrigatória | Descrição |
+|----------|-------------|-----------|
+| `DATABASE_URL` | Sim | Connection string do PostgreSQL |
+| `BETTER_AUTH_SECRET` | Sim | Chave secreta (min 32 chars) |
+| `BETTER_AUTH_URL` | Sim | URL base do servidor |
+| `CORS_ORIGIN` | Não | Origens permitidas (separadas por vírgula) |
+| `LOG_LEVEL` | Não | `debug` · `info` · `warn` · `error` · `fatal` (default: `info`) |
+
+<Callout type="warn">
+Todas as variáveis são validadas com **Zod** em `packages/infra/src/env.ts`. Se uma variável obrigatória estiver faltando, a aplicação **não sobe** e exibe o erro detalhado.
+</Callout>
+
+</Tab>
+<Tab value="Web">
+
+Configuradas em `apps/web/.env`:
+
+| Variável | Descrição |
+|----------|-----------|
+| `VITE_SERVER_URL` | URL do server (vazio em produção se proxy roteia) |
+| `VITE_DEVTOOLS` | `true` para habilitar devtools do TanStack |
+
+</Tab>
+</Tabs>
+
+### Gerando o `.env` automaticamente
+
+```bash
+bun env
+```
+
+O script:
+- Gera o `BETTER_AUTH_SECRET` automaticamente
+- Busca o `DATABASE_URL` do Railway (se configurado)
+- Cria os arquivos `.env` com valores padrão para desenvolvimento
+
+## Deploy com Railway
+
+<Steps>
+<Step>
+
+### Execute o setup
+
+Se ainda não fez durante a instalação:
+
+```bash
+bun install && bun setup
+```
+
+Selecione **Sim** para Railway. O script cria o projeto, provisiona o PostgreSQL e configura os serviços.
+
+</Step>
+<Step>
+
+### Conecte os repositórios
+
+No painel do Railway, conecte cada serviço ao repositório GitHub:
+
+| Serviço | Config File Path |
+|---------|------------------|
+| proxy | `apps/proxy/railway.json` |
+| server | `apps/server/railway.json` |
+| web | `apps/web/railway.json` |
+
+</Step>
+<Step>
+
+### Configure as variáveis
+
+No Railway, adicione as variáveis de ambiente do server. O `DATABASE_URL` é injetado automaticamente pelo serviço PostgreSQL.
+
+</Step>
+<Step>
+
+### Deploy
+
+Faça push para o GitHub — o Railway detecta as mudanças e faz deploy automaticamente.
+
+```bash
+git push origin main
+```
+
+</Step>
+</Steps>
+
+### Comportamento do deploy
+
+<Tabs items={['Produção', 'PR Environments']}>
+<Tab value="Produção">
+
+| Serviço | Pre-deploy | Start | Estratégia |
+|---------|-----------|-------|------------|
+| server | `bun db:migrate` | `./server` (binário) | 30s overlap, restart on failure |
+| web | — | `serve -s dist` | 15s overlap |
+| proxy | — | Caddy | Restart on failure |
+
+<Callout type="info">
+O **overlap** garante zero downtime: a nova versão sobe e recebe tráfego antes da antiga desligar.
+</Callout>
+
+</Tab>
+<Tab value="PR Environments">
+
+O Railway cria ambientes isolados para cada Pull Request:
+
+| Serviço | Pre-deploy | Diferença |
+|---------|-----------|-----------|
+| server | `bun db:migrate && bun db:seed` | Banco populado com dados de teste |
+| web | — | Sleep automático quando inativo |
+| proxy | — | Sem overlap/draining |
+
+Cada PR tem sua própria URL e banco de dados isolado.
+
+</Tab>
+</Tabs>
+
+### Watch patterns
+
+O Railway só rebuilda serviços afetados pelas mudanças:
+
+| Serviço | Rebuilda quando mudar |
+|---------|----------------------|
+| server | `apps/server/**`, `packages/core/**`, `packages/infra/**`, `packages/api/**`, `packages/auth/**` |
+| web | `apps/web/**`, `packages/core/**`, `packages/auth/**`, `packages/api/**` |
+| proxy | `apps/proxy/**` |
+
+## Deploy sem Railway
+
+Para deploy em outras plataformas:
+
+<Steps>
+<Step>
+
+### Build dos apps
+
+```bash
+bun run build
+```
+
+Ou individualmente:
+
+```bash
+bun run build:server   # → apps/server/server (binário)
+bun run build:web      # → apps/web/dist/ (estático)
+```
+
+</Step>
+<Step>
+
+### Configure o banco
+
+Provisione um PostgreSQL e defina `DATABASE_URL` no ambiente do server.
+
+</Step>
+<Step>
+
+### Aplique migrations
+
+```bash
+bun db:migrate
+```
+
+</Step>
+<Step>
+
+### Suba os serviços
+
+```bash
+# Server (porta 3000)
+./apps/server/server
+
+# Web (porta 3001)
+npx serve -s apps/web/dist -p 3001
+```
+
+</Step>
+<Step>
+
+### Configure o proxy
+
+Use Caddy, Nginx ou o load balancer da sua plataforma para rotear `/auth/*` e `/rpc/*` para o server, e o resto para o web.
+
+</Step>
+</Steps>
+
+## Scripts operacionais
+
+| Comando | Descrição |
+|---------|-----------|
+| `bun setup` | Inicializa projeto (GitHub + Railway) |
+| `bun env` | Gera `.env` com variáveis configuradas |
+| `bun railway` | Linka projeto existente ao Railway |
+| `bun db:migrate` | Aplica migrations pendentes |
+| `bun db:seed` | Popula banco com dados de teste |
+| `bun cleanup` | Remove arquivos de exemplo do template |

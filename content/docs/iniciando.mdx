@@ -1,0 +1,133 @@
+---
+title: Iniciando
+description: Como configurar e rodar o template Beta do zero.
+icon: Play
+---
+
+## Requisitos
+
+Antes de começar, certifique-se de ter instalado:
+
+- [Bun](https://bun.sh) >= 1.3.10
+- [GitHub CLI](https://cli.github.com) (`gh`)
+- [Railway CLI](https://docs.railway.com/guides/cli) *(opcional — provisiona PostgreSQL e infra na nuvem)*
+- PostgreSQL *(necessário apenas sem Railway)*
+
+## Instalação
+
+<Steps>
+<Step>
+
+### Clone o template
+
+<Tabs items={['GitHub CLI', 'Git']}>
+<Tab value="GitHub CLI">
+
+```bash
+gh repo clone lucasprmartins/beta <nome-do-projeto>
+```
+
+</Tab>
+<Tab value="Git">
+
+```bash
+git clone https://github.com/lucasprmartins/beta.git <nome-do-projeto>
+```
+
+</Tab>
+</Tabs>
+
+</Step>
+<Step>
+
+### Instale as dependências e execute o setup
+
+```bash
+cd <nome-do-projeto>
+bun install && bun setup
+```
+
+O script interativo pergunta:
+- **Nome do projeto** — usado no `package.json` e no repositório
+- **Owner** — conta pessoal ou organização do GitHub
+- **Railway** — se deseja provisionar a infraestrutura na nuvem
+
+Em seguida, cria um repositório GitHub privado e faz o commit inicial. Se Railway for selecionado, a infra é provisionada automaticamente com PostgreSQL incluso.
+
+</Step>
+</Steps>
+
+## Configuração
+
+<Steps>
+<Step>
+
+### Configure as variáveis de ambiente
+
+```bash
+bun env
+```
+
+O `BETTER_AUTH_SECRET` é gerado automaticamente.
+
+<Callout type="info">
+Com Railway, o `DATABASE_URL` é preenchido automaticamente. Sem Railway, preencha manualmente em `apps/server/.env`.
+</Callout>
+
+</Step>
+<Step>
+
+### Aplique as migrations (sem Railway)
+
+```bash
+bun db:migrate
+```
+
+<Callout type="warn">
+Este passo é necessário apenas se você **não** está usando Railway. Com Railway, as migrations são aplicadas automaticamente no deploy.
+</Callout>
+
+</Step>
+</Steps>
+
+## Rodando o projeto
+
+```bash
+bun dev
+```
+
+| Serviço | URL |
+|---------|-----|
+| Server (API) | `http://localhost:3000` |
+| Web (Frontend) | `http://localhost:3001` |
+
+## Limpeza
+
+Depois de confirmar que tudo está funcionando, remova os arquivos de exemplo que vêm com o template:
+
+```bash
+bun cleanup
+```
+
+## Scripts úteis
+
+| Comando | Descrição |
+|---------|-----------|
+| `bun dev` | Inicia server + web em desenvolvimento |
+| `bun run build` | Build de produção |
+| `bun lint` | Verifica linting |
+| `bun lint:fix` | Corrige linting |
+| `bun check-types` | Verifica tipos TypeScript |
+| `bun db:migrate` | Executa migrations |
+| `bun db:generate` | Gera migration a partir do schema |
+| `bun db:studio` | Abre o Drizzle Studio |
+| `bun db:seed` | Popula o banco com dados de exemplo |
+
+## Integrações
+
+Integrações opcionais estão disponíveis via [beta-tools](https://github.com/lucasprmartins/beta-tools):
+
+```bash
+gh repo clone lucasprmartins/beta-tools
+cd beta-tools && bun install && bun beta
+```

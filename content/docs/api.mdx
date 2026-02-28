@@ -1,0 +1,351 @@
+---
+title: API
+description: Como criar rotas type-safe com oRPC, validação Zod e middleware de autenticação.
+icon: Unplug
+---
+
+O Beta usa **oRPC** para criar APIs type-safe de ponta a ponta — do servidor ao frontend, sem code generation. Toda a API vive em `packages/api`.
+
+<Files>
+  <Folder name="packages/api/src" defaultOpen>
+    <File name="index.ts" />
+    <File name="auth.ts" />
+    <Folder name="routers" defaultOpen>
+      <File name="{dominio}.ts" />
+    </Folder>
+  </Folder>
+</Files>
+
+## Middleware de autenticação
+
+O arquivo `auth.ts` exporta o builder base `o` e dois middlewares de proteção:
+
+<Tabs items={['Rota pública', 'Requer autenticação', 'Requer role']}>
+<Tab value="Rota pública">
+
+Sem middleware — qualquer pessoa acessa:
+
+```ts
+o.route({
+  method: 'GET',
+  path: '/produto/listar',
+  summary: 'Listar Produtos',
+  tags: ['Produto'],
+})
+```
+
+</Tab>
+<Tab value="Requer autenticação">
+
+Usa `requireAuth` — bloqueia se não houver sessão:
+
+```ts
+o.use(requireAuth).route({
+  method: 'POST',
+  path: '/produto/criar',
+  summary: 'Criar Produto',
+  tags: ['Produto'],
+})
+```
+
+</Tab>
+<Tab value="Requer role">
+
+Usa `requireRole` — verifica autenticação **e** permissão:
+
+```ts
+o.use(requireRole('admin')).route({
+  method: 'POST',
+  path: '/admin/config',
+  summary: 'Configurar Sistema',
+  tags: ['Admin'],
+})
+```
+
+</Tab>
+</Tabs>
+
+<Callout type="info">
+`requireAuth` retorna `UNAUTHORIZED` (401) se não houver sessão. `requireRole` retorna `FORBIDDEN` (403) se o usuário não tiver a role necessária.
+</Callout>
+
+## Definindo uma rota
+
+Cada rota segue a mesma estrutura: **route → input → output → errors → handler**.
+
+```ts title="packages/api/src/routers/example-crud.ts"
+const categoriaSchema = z.object({
+  id: z.number().describe('ID da categoria'),
+  nome: z.string().describe('Nome da categoria'),
+  descricao: z.string().describe('Descrição da categoria'),
+})
+
+export const categoriaRouter = {
+  buscar: o
+    .route({
+      method: 'GET',
+      path: '/categoria/buscar',
+      summary: 'Buscar Categoria',
+      description: 'Busca uma categoria pelo ID',
+      tags: ['Categoria'],
+    })
+    .input(z.object({
+      id: z.coerce.number().describe('ID da categoria'),
+    }))
+    .output(categoriaSchema)
+    .errors({
+      NOT_FOUND: { message: 'Categoria não encontrada', data: z.object({ id: z.number() }) },
+    })
+    .handler(async ({ input, errors }) => {
+      const resultado = await categoriaRepository.buscarPorId(input.id)
+      if (!resultado) throw errors.NOT_FOUND({ data: { id: input.id } })
+      return resultado
+    }),
+}
+```
+
+<Callout type="warn">
+Use `z.coerce.number()` para parâmetros de rotas GET — eles chegam como `string` e precisam ser convertidos.
+</Callout>
+
+### Convenções da rota
+
+| Campo | Descrição |
+|-------|-----------|
+| `method` | `GET` para leitura, `POST` para mutações |
+| `path` | `/{dominio}/{acao}` em kebab-case |
+| `summary` | Título curto para o OpenAPI |
+| `description` | Explicação detalhada |
+| `tags` | Agrupamento no OpenAPI (nome do domínio) |
+
+### Schemas Zod
+
+Todos os campos de input e output devem ter `.describe()` — isso gera a documentação OpenAPI automaticamente:
+
+```ts
+z.object({
+  nome: z.string().min(1).describe('Nome do produto'),
+  preco: z.number().positive().describe('Preço em reais'),
+  estoque: z.number().int().min(0).describe('Quantidade em estoque'),
+})
+```
+
+## Tratamento de erros
+
+Erros são tipados via `.errors()` — nunca use `ORPCError` diretamente:
+
+<Tabs items={['NOT_FOUND', 'BAD_REQUEST', 'CONFLICT']}>
+<Tab value="NOT_FOUND">
+
+Recurso não existe:
+
+```ts
+.errors({
+  NOT_FOUND: {
+    message: 'Produto não encontrado',
+    data: z.object({ id: z.number() }),
+  },
+})
+.handler(async ({ input, errors }) => {
+  const resultado = await produtoRepository.buscarPorId(input.id)
+  if (!resultado) throw errors.NOT_FOUND({ data: { id: input.id } })
+  return resultado
+})
+```
+
+</Tab>
+<Tab value="BAD_REQUEST">
+
+Operação inválida (ex: estoque insuficiente):
+
+```ts
+.errors({
+  NOT_FOUND: { message: 'Produto não encontrado', data: z.object({ id: z.number() }) },
+  BAD_REQUEST: { message: 'Estoque insuficiente' },
+})
+.handler(async ({ input, errors }) => {
+  const existe = await produtoRepository.buscarPorId(input.id)
+  if (!existe) throw errors.NOT_FOUND({ data: { id: input.id } })
+
+  const resultado = await removerEstoque(input.id, input.quantidade)
+  if (!resultado) throw errors.BAD_REQUEST({})
+  return resultado
+})
+```
+
+</Tab>
+<Tab value="CONFLICT">
+
+Recurso já existe (ex: nome duplicado):
+
+```ts
+.errors({
+  CONFLICT: {
+    message: 'Categoria já existe',
+    data: z.object({ nome: z.string() }),
+  },
+})
+.handler(async ({ input, errors }) => {
+  const resultado = await criar(input)
+  if (!resultado) throw errors.CONFLICT({ data: { nome: input.nome } })
+  return resultado
+})
+```
+
+</Tab>
+</Tabs>
+
+### Padrão pre-fetch (Domínio Rico)
+
+Quando uma operação pode falhar por dois motivos (recurso não existe **ou** operação inválida), faça pre-fetch:
+
+<Steps>
+<Step>
+
+### Busca o recurso
+
+Se retornar `null` → `NOT_FOUND` (o recurso não existe).
+
+</Step>
+<Step>
+
+### Executa a operação
+
+Se o use case retornar `null` → `BAD_REQUEST` (a operação não é válida para esse recurso).
+
+</Step>
+</Steps>
+
+```ts
+.handler(async ({ input, errors }) => {
+  // 1. Pre-fetch: recurso existe?
+  const existe = await produtoRepository.buscarPorId(input.id)
+  if (!existe) throw errors.NOT_FOUND({ data: { id: input.id } })
+
+  // 2. Operação: é válida?
+  const resultado = await ativar(input.id)
+  if (!resultado) throw errors.BAD_REQUEST({})
+
+  return exportarProduto(resultado)
+})
+```
+
+## Registrando routers
+
+Cada domínio tem seu arquivo de rotas. Todos são combinados em `src/index.ts`:
+
+```ts title="packages/api/src/index.ts"
+import { categoriaRouter } from './routers/example-crud'
+import { produtoRouter } from './routers/example-domain'
+
+export const router = {
+  categoria: categoriaRouter,
+  produto: produtoRouter,
+}
+```
+
+### Dois handlers
+
+O router é exposto por dois handlers no server:
+
+<Tabs items={['RPC (Frontend)', 'OpenAPI (Docs)']}>
+<Tab value="RPC (Frontend)">
+
+Protocolo binário usado pelo frontend via oRPC client — montado em `/rpc`:
+
+```ts
+import { RPCHandler } from '@orpc/server/fetch'
+
+export const rpcHandler = new RPCHandler(router, {
+  onError: ({ error }) => {
+    logger.error({ err: error }, error.message)
+  },
+})
+```
+
+</Tab>
+<Tab value="OpenAPI (Docs)">
+
+REST com documentação interativa via Scalar UI — montado em `/api`:
+
+```ts
+import { OpenAPIHandler } from '@orpc/openapi/fetch'
+
+export const apiHandler = new OpenAPIHandler(router, {
+  onError: ({ error }) => {
+    logger.error({ err: error }, error.message)
+  },
+})
+```
+
+<Callout type="info">
+O handler OpenAPI geralmente é habilitado apenas em desenvolvimento. Ele gera docs interativas automaticamente a partir dos schemas Zod com `.describe()`.
+</Callout>
+
+</Tab>
+</Tabs>
+
+## Use cases
+
+Use cases são instanciados **no nível do módulo** — nunca dentro do handler:
+
+```ts title="packages/api/src/routers/example-crud.ts"
+import { criarCategoria } from '@app/core/application/example-crud/criar-categoria'
+import { categoriaRepository } from '@app/infra/db/repositories/example-crud'
+
+// ✅ Instancia no módulo com injeção de dependência
+const criar = criarCategoria(categoriaRepository)
+
+export const categoriaRouter = {
+  criar: o
+    .route({ /* ... */ })
+    .handler(async ({ input }) => {
+      // ✅ Usa a instância do módulo
+      return criar(input)
+    }),
+}
+```
+
+<Callout type="error">
+**Não instancie use cases dentro do handler.** Isso recria a instância a cada request, perdendo qualquer cache ou estado mantido pelo use case.
+</Callout>
+
+## Checklist de nova rota
+
+<Steps>
+<Step>
+
+### Crie o schema Zod
+
+Defina input e output com `.describe()` em cada campo.
+
+</Step>
+<Step>
+
+### Defina a rota
+
+Use `o.route()` (ou `o.use(requireAuth).route()`) com `method`, `path`, `summary`, `tags`.
+
+</Step>
+<Step>
+
+### Adicione `.errors()`
+
+Mapeie cada falha possível: `NOT_FOUND`, `BAD_REQUEST`, `CONFLICT`.
+
+</Step>
+<Step>
+
+### Implemente o handler
+
+Chame o use case e converta `null` para o erro tipado correspondente.
+
+</Step>
+<Step>
+
+### Registre no router
+
+Adicione o router do domínio ao objeto `router` em `src/index.ts`.
+
+</Step>
+</Steps>

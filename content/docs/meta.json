@@ -1,0 +1,16 @@
+{
+  "pages": [
+    "---Introdução---",
+    "index",
+    "iniciando",
+    "---Conceitos---",
+    "arquitetura",
+    "banco-de-dados",
+    "---Guias Práticos---",
+    "api",
+    "autenticacao",
+    "frontend",
+    "---Operacional---",
+    "deploy"
+  ]
+}
